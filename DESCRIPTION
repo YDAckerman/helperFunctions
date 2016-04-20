@@ -1,0 +1,11 @@
+Package: helperFunctions
+Title: helper functions
+Version: 0.0.0.9000
+Authors@R: person("Yoni", "Ackerman", email = "jonathan.d.ackerman@gmail.com", role = c("aut", "cre"))
+Description: A collection of functions I've found generally useful
+Depends:
+    R (>= 3.2.3)
+License: MIT
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 5.0.1.9000
