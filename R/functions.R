@@ -124,7 +124,7 @@ aIn <- function(s1, s2, ...){
 #' @export
 #' @examples
 RandDF <- function(rows, cols){
-    reps <- 1:cieling(cols / 26)
+    reps <- 1:ceiling(cols / 26)
     column.names <- c()
     for (i in reps){
         adenda <- sapply(letters, function(letter){
