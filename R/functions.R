@@ -2,6 +2,34 @@
 ## generally useful helper functions
 ############################################################
 
+## helper function to create a cluser of
+## cores with the doSNOW Package
+#' Create Cluster
+#'
+#' initiate a cluster for .parallel call
+#' @param noCores numeric - number of cores
+#' @param logfile character - name of file to write logs to
+#' @param export named list - items to export to each cluster
+#' @param lib named list - libraries to export to each cluster
+#' @keywords
+#' @export
+#' @examples
+createCluster <- function(noCores, logfile = "/dev/null",
+                        export = NULL, lib = NULL) {
+    require(doSNOW)
+    require(plyr)
+    cl <- makeCluster(noCores, type = "SOCK", outfile = logfile)
+    if(!is.null(export)) clusterExport(cl, export)
+    if(!is.null(lib)) {
+        l_ply(lib, function(dum) {
+            clusterExport(cl, "dum", envir = environment())
+            clusterEvalQ(cl, library(dum, character.only = TRUE))
+        })
+    }
+    registerDoSNOW(cl)
+    return(cl)
+}
+
 #' Multi-Grepl
 #'
 #' Grepl multiple patterns in a single string
