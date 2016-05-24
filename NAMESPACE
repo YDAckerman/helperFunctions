@@ -3,6 +3,7 @@
 export(RandDF)
 export(SegmentVec)
 export(aIn)
+export(createCluster)
 export(inquire)
 export(insert.vals)
 export(mgrep)
