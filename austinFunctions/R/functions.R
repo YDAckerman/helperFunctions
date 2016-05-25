@@ -1,6 +1,7 @@
 ################################################################################
 ################################################################################
 ## austin helper functions
+data(sysdata, envir=environment())
 
 #' Get Min Edges From Source
 #'
@@ -286,7 +287,7 @@ getRestriction <- function(date, restriction){
         dplyr::select_("startDate", "endDate", restriction) %>%
         dplyr::distinct_("startDate", "endDate", restriction) %>%
         dplyr::filter(endDate > date & startDate <= date)
-    ret[, restriction]
+    ret[1, restriction]
 }
 
 ## given a 24 hour timeseries, find the approximate area below
@@ -332,8 +333,6 @@ getUsageDuring <- function(df, hours){
         areas <- areaBelowTimeSeries(ts, hours = hours)
     }
     tmp <- df %>%
-        dplyr::select(RestPeriod, Restriction, Name,
-                      NetworkNodeInd, reservoir_storage, TSDate) %>%
         dplyr::distinct()
     for (i in 1:length(hours)) {
         new_col_name <- paste0("period", paste(hours[[i]], collapse = "to"))
@@ -455,3 +454,63 @@ summarizeDF <- function(df, column_name, probs = seq(0, 1, .25)){
                    )
     }
 }
+
+#' calcPeriodAggPumpData
+#'
+#' Calculate period-aggregated pump flow data
+#' @param pumpFlowData data frame of the data to be aggregated
+#' @keywords
+#' @export
+#' @examples
+calcPeriodAggPumpData <- function(pumpFlowData = NULL){
+    if(!is.null(pumpFlowData)){
+        ## for each node, restriction, ymd-date, and
+        ## each hour within that date, get the sum of
+        ## all the timeseries' values
+        periodAggPumpFlow <- pumpFlowData %>%
+            group_by(max_temp, RestPeriod, Restriction, Name,
+                     NetworkNodeInd, TSDate, Hour) %>%
+            dplyr::summarise(Value = sum(Value, na.omit = TRUE)) %>%
+            ungroup() %>%
+            ## now for each node, restriction, ymd-date,
+            ## order by hour and pass to custom function getUsageDuring
+            ## to get the area under the curve for the stated
+            ## hour pairs
+            group_by(max_temp, RestPeriod, Restriction, Name,
+                     NetworkNodeInd, TSDate) %>%
+            arrange(Hour) %>%
+            do(getUsageDuring(., hours = list(c(0, 23),
+                                              c(0, 5),
+                                              c(6, 21), 
+                                              c(22, 23),
+                                              c(14, 19)))) %>%
+            ungroup() %>%
+            dplyr::mutate(offpeak = period22to23 + period0to5) %>%
+            dplyr::select(-period22to23, -period0to5) %>%
+            ## give everyone appropriate names
+            dplyr::rename(midpeak = period6to21,
+                          peak = period14to19,
+                          total = period0to23)
+        ## Aggregate up to the full network
+        periodAggPumpFlowTot <- periodAggPumpFlow %>%
+            dplyr::select(max_temp, RestPeriod, Restriction, Name,
+                          NetworkNodeInd, TSDate, total,
+                          midpeak, peak, offpeak) %>%
+            dplyr::group_by(max_temp, RestPeriod, Restriction, TSDate) %>%
+            dplyr::summarise(total = sum(total, na.rm = TRUE),
+                             midpeak = sum(midpeak, na.rm = TRUE),
+                             peak = sum(peak, na.rm = TRUE),
+                             offpeak = sum(offpeak, na.rm = TRUE)) %>%
+            dplyr::ungroup()
+        save(periodAggPumpFlow, periodAggPumpFlowTot,
+             file = "/Volumes/Yoni/AustinR/periodAggPumpFlow.rda")
+    } else {
+        load("/Volumes/Yoni/AustinR/periodAggPumpFlow.rda")    
+    }
+    assign(x = "periodAggPumpFlow", periodAggPumpFlow,
+           envir = globalenv())
+    assign(x = "periodAggPumpFlowTot", periodAggPumpFlowTot,
+           envir = globalenv())
+}
+
+
