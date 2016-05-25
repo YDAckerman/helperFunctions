@@ -512,5 +512,3 @@ calcPeriodAggPumpData <- function(pumpFlowData = NULL){
     assign(x = "periodAggPumpFlowTot", periodAggPumpFlowTot,
            envir = globalenv())
 }
-
-
