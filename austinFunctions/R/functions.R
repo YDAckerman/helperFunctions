@@ -562,13 +562,12 @@ load_austinData <- function(dataset = c("flow", "energy", "usage"))
     austinData <- sqlQuery(con, sql) %>%
         dplyr::mutate(
             TSDate = as.Date(TSDate, format = "%Y-%m-%d"),
-            ymd = as.Date(TSDate, format = "%Y-%m-%d"),
-            ymdhms = chron(TSDate, TSTime, format = c("y-m-d", "h:m:s"))) %>%
+            ymd = as.Date(TSDate, format = "%Y-%m-%d")) %>%
         dplyr::mutate(
-            Year = lubridate::year(ymdhms),
-            Month = lubridate::month(ymdhms),
-            Day = lubridate::day(ymdhms),
-            Hour = lubridate::hour(ymdhms)) %>%
+            Year = lubridate::year(TSDate),
+            Month = lubridate::month(TSDate),
+            Day = lubridate::day(TSDate),
+            Hour = lubridate::hour(TSDate)) %>%
         dplyr::mutate(jday = base::julian(ymd),
                   yday = lubridate::yday(ymd),
                   weekday = weekdays(ymd))
