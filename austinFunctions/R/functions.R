@@ -265,7 +265,6 @@ smoothNAs <- function(timeSeries){
 #' @keywords
 #' @export
 #' @examples
-#' 
 getWeek <- function(date){
     f <- Vectorize(function(date){
         weeks <- sort(rep(1:5, 7))
@@ -296,7 +295,8 @@ getRestriction <- function(date, restriction){
 #' Function Name
 #'
 #' Function Description
-#' @param
+#' @param series
+#' @param hours
 #' @keywords
 #' @export
 #' @examples
@@ -333,6 +333,7 @@ getUsageDuring <- function(df, hours){
         areas <- areaBelowTimeSeries(ts, hours = hours)
     }
     tmp <- df %>%
+        dplyr::select(-Hour, -Value) %>%
         dplyr::distinct()
     for (i in 1:length(hours)) {
         new_col_name <- paste0("period", paste(hours[[i]], collapse = "to"))
@@ -466,11 +467,13 @@ calcPeriodAggPumpData <- function(pumpFlowData = NULL){
     if(!is.null(pumpFlowData)){
         ## for each node, restriction, ymd-date, and
         ## each hour within that date, get the sum of
-        ## all the timeseries' values
+        ## all the timeseries' values. 
         periodAggPumpFlow <- pumpFlowData %>%
-            group_by(max_temp, RestPeriod, Restriction, Name,
+            ## divide by 24 to get MG/H from MG/D and multiply
+            dplyr::mutate(Value = Value / 24) %>%
+            dplyr::group_by(max_temp, RestPeriod, Restriction, Name,
                      NetworkNodeInd, TSDate, Hour) %>%
-            dplyr::summarise(Value = sum(Value, na.omit = TRUE)) %>%
+            dplyr::summarise(Value = sum(Value, na.rm = TRUE)) %>%
             ungroup() %>%
             ## now for each node, restriction, ymd-date,
             ## order by hour and pass to custom function getUsageDuring
@@ -478,27 +481,29 @@ calcPeriodAggPumpData <- function(pumpFlowData = NULL){
             ## hour pairs
             group_by(max_temp, RestPeriod, Restriction, Name,
                      NetworkNodeInd, TSDate) %>%
-            arrange(Hour) %>%
-            do(getUsageDuring(., hours = list(c(0, 23),
-                                              c(0, 5),
-                                              c(6, 21), 
-                                              c(22, 23),
+            dplyr::arrange(Hour) %>%
+            do(getUsageDuring(., hours = list(c(0, 23), c(0, 5),
+                                              c(6, 21), c(6, 13),
+                                              c(21, 21), c(22, 23),
                                               c(14, 19)))) %>%
             ungroup() %>%
-            dplyr::mutate(offpeak = period22to23 + period0to5) %>%
-            dplyr::select(-period22to23, -period0to5) %>%
+            dplyr::mutate(offpeak = period22to23 + period0to5,
+                          midpeakSummer = period6to13 + period21to21) %>%
+            dplyr::select(-period22to23, -period0to5,
+                          -period6to13, -period20to21) %>%
             ## give everyone appropriate names
             dplyr::rename(midpeak = period6to21,
-                          peak = period14to19,
+                          peak = period14to20,
                           total = period0to23)
         ## Aggregate up to the full network
         periodAggPumpFlowTot <- periodAggPumpFlow %>%
             dplyr::select(max_temp, RestPeriod, Restriction, Name,
                           NetworkNodeInd, TSDate, total,
-                          midpeak, peak, offpeak) %>%
+                          midpeak, midpeakSummer, peak, offpeak) %>%
             dplyr::group_by(max_temp, RestPeriod, Restriction, TSDate) %>%
             dplyr::summarise(total = sum(total, na.rm = TRUE),
                              midpeak = sum(midpeak, na.rm = TRUE),
+                             midpeakSummer = sum(midpeakSummer, na.rm = TRUE),
                              peak = sum(peak, na.rm = TRUE),
                              offpeak = sum(offpeak, na.rm = TRUE)) %>%
             dplyr::ungroup()
@@ -512,3 +517,111 @@ calcPeriodAggPumpData <- function(pumpFlowData = NULL){
     assign(x = "periodAggPumpFlowTot", periodAggPumpFlowTot,
            envir = globalenv())
 }
+
+#' Load Austin Energy
+#'
+#' loads the austin network energy (kwh) data
+#' @param dataset - the type of data to be retrieved
+#' @keywords
+#' @export
+#' @examples
+load_austinData <- function(dataset = c("flow", "energy", "usage"))
+{
+    dataset <- "usage"
+    ## passwords are stored on the external hard drive
+    source("/Volumes/Yoni/Passwords/passwords.R")
+    con <- try(odbcConnect("cbnetworkbuilder",
+                           uid = "Yoni_temp",
+                           pwd = credentials$passwords$Yoni_temp))
+    if(identical(class(con), "try-error")){
+        warning(paste0("Password was incorrect, please ",
+                       "check password and try again"))
+    }
+    ## Statement to extract all mgd pump time series data.
+    conditions <- switch(dataset,
+                              flow = list(where = " WHERE Attributes = 'Flow'",
+                                          assetInd = " 1"),
+                              energy = list(where = " WHERE Unit = 'kwh'",
+                                            assetInd = " 1"),
+                              usage = list(where = paste0(" WHERE Unit = 'MGD'",
+                                                          " AND Name LIKE",
+                                                          " '%Usage%'"),
+                                           assetInd = " 3"))
+    sql <- paste0("SELECT TSDate, TSTime, Value, NetworkNodeInd,
+                         TimeSeriesData.TimeSeriesInd AS TimeSeriesInd
+                  FROM   TimeSeriesData INNER JOIN (
+                         SELECT * FROM dbo.TimeSeriesToNetworkNodes
+                         WHERE NetworkNodeInd IN (
+                               SELECT Ind FROM dbo.NetworkNodes
+                               WHERE NetworkInd = 40 AND AssetInd =",
+                         conditions[["assetInd"]], ")) tn
+                         ON TimeSeriesData.TimeSeriesInd = tn.TimeSeriesInd
+                  WHERE  TimeSeriesData.TimeSeriesInd IN (
+                         SELECT Ind FROM dbo.TimeSeries",
+                         conditions[["where"]], ")")
+    austinData <- sqlQuery(con, sql) %>%
+        dplyr::mutate(
+            TSDate = as.Date(TSDate, format = "%Y-%m-%d"),
+            ymd = as.Date(TSDate, format = "%Y-%m-%d"),
+            ymdhms = chron(TSDate, TSTime, format = c("y-m-d", "h:m:s"))) %>%
+        dplyr::mutate(
+            Year = lubridate::year(ymdhms),
+            Month = lubridate::month(ymdhms),
+            Day = lubridate::day(ymdhms),
+            Hour = lubridate::hour(ymdhms)) %>%
+        dplyr::mutate(jday = base::julian(ymd),
+                  yday = lubridate::yday(ymd),
+                  weekday = weekdays(ymd))
+    austinData$weekday <- factor(pumpEnergyData$weekday,
+                                   levels = c("Monday", "Tuesday", "Wednesday",
+                                              "Thursday", "Friday", "Saturday",
+                                              "Sunday"))
+    austinData <- left_join(austinData, load_austinNetwork()[["nodes"]],
+                         by = c("NetworkNodeInd" = "nodeInd"))
+    ## close the connection
+    close(con)
+    return(austinData)
+}
+
+#' load Austin Network
+#'
+#' load austin network data, return a list with nodes and edges.
+#' @param NONE
+#' @keywords
+#' @export
+#' @examples
+load_austinNetwork <- function()
+{
+    ## passwords are stored on the external hard drive
+    source("/Volumes/Yoni/Passwords/passwords.R")
+
+    con <- try(odbcConnect("cbnetworkbuilder",
+                           uid = "Yoni_temp",
+                           pwd = credentials$passwords$Yoni_temp))
+
+    if(identical(class(con), "try-error")){
+        warning("Password was incorrect, please check password and try again")
+    }
+
+    ## Statement to extract the network edges
+    sql <- "SELECT * FROM NetworkEdges
+        WHERE DestinationNodeInd IN (
+              SELECT Ind FROM NetworkNodes
+              WHERE NetworkInd = 40)
+        OR SourceNodeInd IN (
+              SELECT Ind FROM NetworkNodes
+              WHERE NetworkInd = 40)"
+    edges <- sqlQuery(con, sql)
+
+    ## Statement to extract the network nodes
+    sql <- "SELECT NetworkNodes.Ind as nodeInd, Name, Type FROM
+               NetworkNodes LEFT JOIN Assets
+               ON NetworkNodes.AssetInd = Assets.Ind
+               WHERE NetworkInd = 40"
+
+    nodes <- sqlQuery(con, sql)
+    ## close the connection
+    close(con)
+    return(list("nodes" = nodes, "edges" = edges))
+}
+
