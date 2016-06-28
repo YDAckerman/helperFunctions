@@ -571,7 +571,7 @@ load_austinData <- function(dataset = c("flow", "energy", "usage"))
         dplyr::mutate(jday = base::julian(ymd),
                   yday = lubridate::yday(ymd),
                   weekday = weekdays(ymd))
-    austinData$weekday <- factor(pumpEnergyData$weekday,
+    austinData$weekday <- factor(austinData$weekday,
                                    levels = c("Monday", "Tuesday", "Wednesday",
                                               "Thursday", "Friday", "Saturday",
                                               "Sunday"))
