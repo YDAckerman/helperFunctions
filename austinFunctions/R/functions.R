@@ -184,13 +184,19 @@ performKmeans <- function(df, k, .nstart){
 #' normalize a column in a dataframe
 #' @param df - dataframe
 #' @param colname - name of column to normalize
+#' @param type - the type of normalization to do
 #' @keywords
 #' @export
 #' @examples
-normalizeColumn <- function(df, colname){
-    x <- df[, colname]
-    new_x <- (x - min(x, na.rm = TRUE)) /
-        (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+normalizeColumn <- function(df, colname, type = "Feature Scaling"){
+    x <- unlist(df[, colname])
+    if(type == "Feature Scaling"){
+        new_x <- (x - min(x, na.rm = TRUE)) /
+            (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+    }
+    if(type == "Standard"){
+        new_x <- (x - mean(x))/(sqrt(var(x)))
+    }
     df[,paste("Normalized", colname, sep = "")] <- new_x
     df
 }
@@ -463,7 +469,8 @@ summarizeDF <- function(df, column_name, probs = seq(0, 1, .25)){
 #' @keywords
 #' @export
 #' @examples
-calcPeriodAggPumpData <- function(pumpFlowData = NULL){
+calcPeriodAggPumpData <- function(pumpFlowData = NULL)
+{
     if(!is.null(pumpFlowData)){
         ## for each node, restriction, ymd-date, and
         ## each hour within that date, get the sum of
@@ -512,10 +519,8 @@ calcPeriodAggPumpData <- function(pumpFlowData = NULL){
     } else {
         load("/Volumes/Yoni/AustinR/periodAggPumpFlow.rda")    
     }
-    assign(x = "periodAggPumpFlow", periodAggPumpFlow,
-           envir = globalenv())
-    assign(x = "periodAggPumpFlowTot", periodAggPumpFlowTot,
-           envir = globalenv())
+    list("periodAggPumpFlow" = periodAggPumpFlow,
+         "periodAggPumpFlowTot" = periodAggPumpFlowTot)
 }
 
 #' Load Austin Energy
@@ -527,7 +532,6 @@ calcPeriodAggPumpData <- function(pumpFlowData = NULL){
 #' @examples
 load_austinData <- function(dataset = c("flow", "energy", "usage"))
 {
-    dataset <- "usage"
     ## passwords are stored on the external hard drive
     source("/Volumes/Yoni/Passwords/passwords.R")
     con <- try(odbcConnect("cbnetworkbuilder",
@@ -624,3 +628,147 @@ load_austinNetwork <- function()
     return(list("nodes" = nodes, "edges" = edges))
 }
 
+#' overwrite_pz
+#'
+#' remove pressure zones, lakes, and WT plants and reconnect the pumps
+#' @param network - the network data
+#' @keywords
+#' @export
+#' @examples
+overwrite_pz <- function(network){
+    v <- network$nodes
+    e <- network$edges
+    pzs <- v[v$Type != "Pump", "nodeInd"]
+    newEdges <- ldply(pzs, function(pz){
+        inE <- e %>% dplyr::filter(DestinationNodeInd == pz)
+        outE <- e %>% dplyr::filter(SourceNodeInd == pz)
+        newE <- left_join(inE, outE,
+                          by = c('DestinationNodeInd' = 'SourceNodeInd'))
+        newE %>%
+            dplyr::filter(!is.na(DestinationNodeInd.y)) %>%
+            dplyr::select(Ind = Ind.x, SourceNodeInd,
+                          DestinationNodeInd = DestinationNodeInd.y,
+                          Value = Value.y)
+    })
+    oldEdges <- e %>% dplyr::filter(!(SourceNodeInd %in% pzs) &
+                                    !(DestinationNodeInd %in% pzs))
+    v <- v %>% dplyr::filter(!(nodeInd %in% pzs))
+    e <- rbind(oldEdges, newEdges)
+    list(nodes = v, edges = e)
+}
+
+#' calc_monthly_costs
+#'
+#' calculates the monthly network costs
+#' @param MANY - as of now
+#' @keywords
+#' @export
+#' @examples
+calc_monthly_costs <- function(flat_rate_charge = 68,
+                               e_delivery_charge = 4.50,
+                               TOU_demand_charge_peak = 8,
+                               TOU_demand_charge_midpeak = 4,
+                               psa = .057,
+                               offpeak_charge = -.00222,
+                               midpeak_charge = .03565,
+                               peak_charge = .0607,
+                               EnergyIntensityList = NULL){
+    require(dplyr)
+    
+    ## load data
+    pumpFlowData <- load_austinData("flow")
+    periodAggPumpFlow <- calcPeriodAggPumpData()[[1]]
+    if(is.null(EnergyIntensityList)){
+        EnergyIntensityList <- data.frame(
+            Name = unique(pumpFlowData$Name),
+            EI = 500
+        )
+    }
+
+    ## calculate demand quantities
+    demand_charges <- pumpFlowData %>%
+        dplyr::group_by(Name, Year, Month, TSDate, Hour) %>%
+        dplyr::summarise(Value = sum(Value, na.rm = TRUE)) %>%
+        dplyr::ungroup() %>%
+        dplyr::group_by(Name, Year, Month) %>%
+        dplyr::do(calc_demands(.)) %>%
+        dplyr::ungroup()
+
+    ## calculate monthly costs based on demands and
+    ## period usages
+    monthCostbyPZ <- periodAggPumpFlow %>%
+        dplyr::mutate(yearmon = as.yearmon(TSDate),
+                      Year = year(TSDate),
+                      Month = month(TSDate)) %>%
+        dplyr::do(left_join(., EnergyIntensityList,
+                            by = c("Name"))) %>%
+        dplyr::group_by(Name, Year, Month, yearmon, EI) %>%
+        ## calculate the partial costs
+        dplyr::summarise(PSA = sum(total, na.rm = TRUE),
+                         total_volume_midpeak = sum(midpeak, na.rm = TRUE),
+                         total_volume_midpeakSummer = sum(midpeakSummer,
+                                                          na.rm = TRUE),
+                         total_volume_offpeak = sum(offpeak, na.rm = TRUE),
+                         total_volume_peak = sum(peak, na.rm = TRUE)) %>%
+        dplyr::ungroup() %>%
+        dplyr::do(left_join(., demand_charges,
+                            by = c("Year", "Month", "Name"))) %>%
+        ## combine partial costs into total costs
+        dplyr::mutate(total_cost =
+                          flat_rate_charge +
+                          e_delivery_charge * EI * general_max_flow +
+                          ifelse(Month %in% 6:9,
+                                 TOU_demand_charge_peak *
+                                 EI * peak_max_flow, 0) +
+                          ifelse(Month %in% c(10:12, 1:5),
+                                 TOU_demand_charge_midpeak * EI *
+                                 midpeak_max_flow, 0) +
+                          PSA * EI * psa +
+                          offpeak_charge * EI * total_volume_offpeak +
+                          ifelse(Month %in% 6:9,
+                                 midpeak_charge * EI *
+                                 total_volume_midpeakSummer,
+                                 midpeak_charge * EI *
+                                 total_volume_midpeak) +
+                          ifelse(Month %in% 6:9, 
+                                 peak_charge  * EI * peak_charge,
+                                 0),
+                      ## determine season
+                      season = ifelse(Month %in% 6:9, "summer",
+                               ifelse(Month %in% c(10:12, 1:2), "winter",
+                                      "spring/fall"))) %>%
+        dplyr::arrange(Year, Month) %>%
+        dplyr::select(Year, Month, yearmon, season, total_cost)
+    ## aggregate pz costs into network-wide costs:
+    monthTotalCost <- monthCostbyPZ %>%
+        dplyr::group_by(Year, Month, yearmon, season) %>%
+        dplyr::summarise(total_cost = sum(total_cost, na.rm = TRUE)) %>%
+        ungroup()
+    
+    list("pzCost" = monthCostbyPZ, "networkCost" = monthTotalCost)
+}
+
+#' calc_demands
+#'
+#' calculate the greatest hourly flow so that we
+#' can estimate energy demand
+#' @param data - data passed from dplyr
+#' @keywords
+#' @export
+#' @examples
+calc_demands <- function(data){
+    params <- list("peak_max_flow" = 14:20,
+                   "midpeak_max_flow" = 6:21,
+                   "general_max_flow" = 0:24)
+    dats <- llply(names(params), function(param){
+        peakDemand <- data %>%
+            dplyr::filter(Hour %in% params[[param]]) %>%
+            dplyr::summarise(max_flow = max(Value, na.rm = TRUE)) %>%
+            dplyr::mutate(max_flow = max_flow / 24) %>%
+            dplyr::ungroup()
+        new_cols <- gsub("max_flow", param, colnames(peakDemand))
+        colnames(peakDemand) <- new_cols
+        peakDemand
+    })
+    Reduce(function(...) merge(..., all = TRUE), dats)
+}

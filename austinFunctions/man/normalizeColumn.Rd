@@ -4,12 +4,14 @@
 \alias{normalizeColumn}
 \title{Normalize Column}
 \usage{
-normalizeColumn(df, colname)
+normalizeColumn(df, colname, type = "Feature Scaling")
 }
 \arguments{
 \item{df}{- dataframe}
 
 \item{colname}{- name of column to normalize}
+
+\item{type}{- the type of normalization to do}
 }
 \description{
 normalize a column in a dataframe
